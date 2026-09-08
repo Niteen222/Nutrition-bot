@@ -41,7 +41,16 @@ def analyze_food_image(image_bytes, mime_type):
     if not api_key:
         return "Error: GEMINI_API_KEY is not set."
 
-    for model_name in ["gemini-3.6-flash", "gemini-flash-latest"]:
+    # Fallback model list
+    models_to_try = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-flash-latest",
+        "gemini-pro-vision"
+    ]
+
+    for model_name in models_to_try:
         try:
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(
@@ -49,7 +58,7 @@ def analyze_food_image(image_bytes, mime_type):
                     MASTER_PROMPT,
                     {"mime_type": mime_type, "data": image_bytes}
                 ],
-                request_options={"timeout": 30}
+                request_options={"timeout": 60}
             )
             if response and response.text:
                 return response.text
@@ -58,4 +67,5 @@ def analyze_food_image(image_bytes, mime_type):
             continue
 
     return "An error occurred while analyzing the image. Please try again."
+
 

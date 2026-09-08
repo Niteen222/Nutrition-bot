@@ -32,9 +32,85 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # A set to keep track of candidates who have submitted today (for end of day absence check)
 submitted_today = set()
+has_announced_online = False
+
+async def process_food_photo(message):
+    """
+    Downloads and analyzes food photo attachments in a message,
+    replies with nutrition analysis, updates Google Sheet, and adds confirmation reaction.
+    """
+    if message.author == bot.user:
+        return
+
+    # Check if already processed (has ✅ reaction from bot)
+    for reaction in message.reactions:
+        if reaction.emoji == "✅":
+            users = [u async for u in reaction.users()]
+            if bot.user in users:
+                print(f"[DEBUG] Message {message.id} already processed. Skipping.")
+                return
+
+    if not message.attachments:
+        return
+
+    for attachment in message.attachments:
+        # Check if it's an image
+        if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
+            try:
+                await message.add_reaction("⏳") # Processing reaction
+            except Exception as re:
+                print(f"Reaction error: {re}")
+            
+            try:
+                # Download image bytes
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(attachment.url) as resp:
+                        if resp.status == 200:
+                            image_bytes = await resp.read()
+                            mime_type = attachment.content_type or "image/jpeg"
+                            
+                            # Send to Gemini
+                            print(f"[DEBUG] Sending image from {message.author} to Gemini for analysis...")
+                            analysis_result = gemini_integration.analyze_food_image(image_bytes, mime_type)
+                            print("[DEBUG] Gemini analysis received.")
+                            
+                            # Reply with analysis
+                            await message.reply(analysis_result)
+                            
+                            # Update Sheet
+                            try:
+                                candidates = sheets_integration.get_candidates()
+                                candidate_name = message.author.display_name
+                                for c in candidates:
+                                    if str(c.get('discord_id')) == str(message.author.id):
+                                        candidate_name = c.get('name')
+                                        break
+                                        
+                                sheets_integration.mark_attendance(message.author.id, candidate_name, "Present", "Food analyzed")
+                            except Exception as se:
+                                print(f"Sheets update note: {se}")
+                            
+                            # Record that they submitted today
+                            global submitted_today
+                            submitted_today.add(str(message.author.id))
+                            
+                            try:
+                                await message.remove_reaction("⏳", bot.user)
+                                await message.add_reaction("✅")
+                            except Exception as re2:
+                                print(f"Reaction update note: {re2}")
+                        else:
+                            await message.reply("Sorry, I couldn't download the image.")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"Error processing image: {e}")
+                await message.reply("An error occurred while analyzing the image.")
+
 
 @bot.event
 async def on_ready():
+    global has_announced_online
     print(f'Logged in as {bot.user.name} ({bot.user.id})')
     print('------ Connected Guilds: ------')
     for guild in bot.guilds:
@@ -57,9 +133,24 @@ async def on_ready():
                 except Exception as je:
                     print(f'Note on thread join: {je}')
             
-            # Send an announcement so user sees it in Discord
-            await target.send("🟢 **NutriTrack AI is online!** Please upload your food photo here for nutrition analysis.")
-            print(f'Sent online message to target: {target.name}')
+            # Announce only once per session startup
+            if not has_announced_online:
+                has_announced_online = True
+                print(f'Bot connected to target: {target.name}')
+            
+            # Scan recent messages (last 20) for any missed food photos while offline
+            print('Scanning recent messages for any missed food photos...')
+            try:
+                async for old_msg in target.history(limit=20):
+                    if old_msg.attachments and old_msg.author != bot.user:
+                        # Check if message already has ✅ reaction
+                        has_check = any(r.emoji == "✅" for r in old_msg.reactions)
+                        if not has_check:
+                            print(f'Found unanalyzed food photo from {old_msg.author}. Processing now...')
+                            await process_food_photo(old_msg)
+            except Exception as he:
+                print(f'Note on history scan: {he}')
+
         except Exception as e:
             print(f'Error accessing MAIN_CHANNEL_ID ({MAIN_CHANNEL_ID}): {e}')
 
@@ -124,11 +215,9 @@ async def on_message(message):
     print(f"[DEBUG] Has attachments: {len(message.attachments)}")
     
     # Check if the message is in the designated channel or thread
-    # For threads, also check if the parent channel matches OR the thread ID matches
     target_id = str(MAIN_CHANNEL_ID) if MAIN_CHANNEL_ID else None
     current_channel_id = str(message.channel.id)
     
-    # Also check parent channel for threads
     parent_id = None
     if isinstance(message.channel, discord.Thread) and message.channel.parent:
         parent_id = str(message.channel.parent.id)
@@ -137,61 +226,8 @@ async def on_message(message):
     
     if target_id and is_target_channel:
         print(f"[DEBUG] Channel matched! Checking for food photos...")
-        # Scenario A: Candidate Shares Food Photo
-        if message.attachments:
-            for attachment in message.attachments:
-                # Check if it's an image
-                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
-                    try:
-                        await message.add_reaction("⏳") # Processing reaction
-                    except Exception as re:
-                        print(f"Reaction error: {re}")
-                    
-                    try:
-                        # Download image bytes
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(attachment.url) as resp:
-                                if resp.status == 200:
-                                    image_bytes = await resp.read()
-                                    mime_type = attachment.content_type or "image/jpeg"
-                                    
-                                    # Send to Gemini
-                                    print("[DEBUG] Sending image to Gemini for analysis...")
-                                    analysis_result = gemini_integration.analyze_food_image(image_bytes, mime_type)
-                                    print("[DEBUG] Gemini analysis received.")
-                                    
-                                    # Reply with analysis
-                                    await message.reply(analysis_result)
-                                    
-                                    # Update Sheet
-                                    try:
-                                        candidates = sheets_integration.get_candidates()
-                                        candidate_name = message.author.display_name
-                                        for c in candidates:
-                                            if str(c.get('discord_id')) == str(message.author.id):
-                                                candidate_name = c.get('name')
-                                                break
-                                                
-                                        sheets_integration.mark_attendance(message.author.id, candidate_name, "Present", "Food analyzed")
-                                    except Exception as se:
-                                        print(f"Sheets update note: {se}")
-                                    
-                                    # Record that they submitted today
-                                    global submitted_today
-                                    submitted_today.add(str(message.author.id))
-                                    
-                                    try:
-                                        await message.remove_reaction("⏳", bot.user)
-                                        await message.add_reaction("✅")
-                                    except Exception as re2:
-                                        print(f"Reaction update note: {re2}")
-                                else:
-                                    await message.reply("Sorry, I couldn't download the image.")
-                    except Exception as e:
-                        import traceback
-                        traceback.print_exc()
-                        print(f"Error processing image: {e}")
-                        await message.reply("An error occurred while analyzing the image.")
+        await process_food_photo(message)
+
 
 
 
