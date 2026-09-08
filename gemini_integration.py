@@ -41,14 +41,12 @@ def analyze_food_image(image_bytes, mime_type):
     if not api_key:
         return "Error: GEMINI_API_KEY is not set."
 
-    # Fallback model list
+    # Available models
     models_to_try = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-flash-latest",
-        "gemini-pro-vision"
+        "gemini-3.6-flash",
+        "gemini-flash-latest"
     ]
+
 
     for model_name in models_to_try:
         try:

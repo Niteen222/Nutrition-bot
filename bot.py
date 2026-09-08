@@ -74,8 +74,13 @@ async def process_food_photo(message):
                             analysis_result = gemini_integration.analyze_food_image(image_bytes, mime_type)
                             print("[DEBUG] Gemini analysis received.")
                             
-                            # Reply with analysis
-                            await message.reply(analysis_result)
+                            # Reply with analysis (with fallback if message reference fails)
+                            try:
+                                await message.reply(analysis_result)
+                            except Exception as re_err:
+                                print(f"Reply reference note: {re_err}, sending directly to channel with mention...")
+                                await message.channel.send(f"<@{message.author.id}>\n{analysis_result}")
+
                             
                             # Update Sheet
                             try:
